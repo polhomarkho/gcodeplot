@@ -12,6 +12,8 @@ from random import sample
 from svgpath.shader import Shader
 from gcodeplotutils.processoffset import OffsetProcessor
 from gcodeplotutils.evaluate import evaluate
+#from inkex.utils import debug
+
 
 SCALE_NONE = 0
 SCALE_DOWN_ONLY = 1
@@ -24,20 +26,29 @@ ALIGN_RIGHT = ALIGN_TOP
 ALIGN_CENTER = 3
 
 class Plotter(object):
-    def __init__(self, xyMin=(7,8), xyMax=(204,178),
+    def __init__(self, xyMin=(7,8), xyMax=(204,178), toolXyOffset=(0,0),
             drawSpeed=35, moveSpeed=40, zSpeed=5, workZ = 14.5, liftDeltaZ = 2.5, safeDeltaZ = 20,
             liftCommand=None, safeLiftCommand=None, downCommand=None, comment=";",
-            initCode = "G00 S1; endstops|"
-                       "G00 E0; no extrusion|"
-                       "G01 S1; endstops|"
-                       "G01 E0; no extrusion|"
+            initCode = "G0 S1; endstops|"
+                       "G0 E0; no extrusion|"
+                       "G1 S1; endstops|"
+                       "G1 E0; no extrusion|"
                        "G21; millimeters|"
                        "G91 G0 F%.1f{{zspeed*60}} Z%.3f{{safe}}; pen park !!Zsafe|"
                        "G90; absolute|"
-                       "G28 X; home|"
-                       "G28 Y; home|"
-                       "G28 Z; home",
-            endCode=None):
+                       "G28|"
+                       ";G29|"
+                       "G1 F%.1f{{zspeed*60}} Z15|"
+                       "BED_MESH_PROFILE LOAD=glass_bed|"
+                       "G1 F%.1f{{movespeed*60}} Y25|"
+                       "G1 F%.1f{{zspeed*60}} Z0.1|"
+                       "G1 F%.1f{{zspeed*60}} Z15|"
+                       "SET_GCODE_OFFSET X=%.1f{{toolxoffset}} Y=%.1f{{toolyoffset}}",
+            endCode= "SET_GCODE_OFFSET X=0 Y=0; resets tool offset|"
+                     "G0 Y235 F%.1f{{movespeed*60}}|"
+                     "M84"
+            ):
+        self.toolXyOffset = toolXyOffset
         self.xyMin = xyMin
         self.xyMax = xyMax
         self.drawSpeed = drawSpeed
@@ -69,7 +80,7 @@ class Plotter(object):
         
     def updateVariables(self):
         self.variables = {'lift':self.liftDeltaZ, 'work':self.workZ, 'safe':self.safeDeltaZ, 'left':self.xyMin[0],
-            'bottom':self.xyMin[1], 'zspeed':self.zSpeed, 'movespeed':self.moveSpeed}
+            'bottom':self.xyMin[1], 'zspeed':self.zSpeed, 'movespeed':self.moveSpeed, 'toolxoffset':self.toolXyOffset[0], 'toolyoffset':self.toolXyOffset[1]}
         self.formulas = {'right':str(self.xyMax[0]), 'top':str(self.xyMax[1]), 'up':'work+lift', 'park':'work+safe', 'centerx':'(left+right)/2.', 'centery':'(top+bottom)/2.'}
 
 def processCode(code):
@@ -259,6 +270,7 @@ def comparePaths(path1,path2,tolerance=0.05,pointsToCheck=3):
 def removePenBob(data):
     """
     Merge segments with same beginning and end
+    PES : En pratique, cela duplique le 1er segment on dirait sur un path simple
     """
 
     outData = {}
@@ -332,6 +344,7 @@ def emitGcode(data, pens = {}, plotter=Plotter(), scalingMode=SCALE_NONE, align 
     if len(data) == 0:
         return None
 
+    # PES check if drawing fits or try to scale if needed
     xyMin = [float("inf"),float("inf")]
     xyMax = [float("-inf"),float("-inf")]
 
@@ -341,8 +354,8 @@ def emitGcode(data, pens = {}, plotter=Plotter(), scalingMode=SCALE_NONE, align 
     scale.offset = (plotter.xyMin[0],plotter.xyMin[1])
 
     for pen in data:
-        for segment in data[pen]:
-            for point in segment:
+        for path in data[pen]:
+            for point in path:
                 if not plotter.inRange(scale.scalePoint(point)):
                     allFit = False
                 for i in range(2):
@@ -377,12 +390,13 @@ def emitGcode(data, pens = {}, plotter=Plotter(), scalingMode=SCALE_NONE, align 
             if lift:
                 gcode.extend(processCode(lift))
             else:
-                gcode.append('G00 F%.1f Z%.3f; pen park !!Zpark' % (plotter.zSpeed*60., plotter.safeUpZ))
+                gcode.append('G0 F%.1f Z%.3f; pen park !!Zpark' % (plotter.zSpeed*60., plotter.safeUpZ))
 
     park()
-    if not simulation:
-        gcode.append('G00 F%.1f Y%.3f; !!Ybottom' % (plotter.moveSpeed*60.,   plotter.xyMin[1]))
-        gcode.append('G00 F%.1f X%.3f; !!Xleft' % (plotter.moveSpeed*60.,   plotter.xyMin[0]))
+    # PES : sert à rien
+    #if not simulation:
+    #    gcode.append('G0 F%.1f Y%.3f; !!Ybottom' % (plotter.moveSpeed*60.,   plotter.xyMin[1]))
+    #    gcode.append('G0 F%.1f X%.3f; !!Xleft' % (plotter.moveSpeed*60.,   plotter.xyMin[0]))
 
     class State(object):
         pass
@@ -402,7 +416,7 @@ def emitGcode(data, pens = {}, plotter=Plotter(), scalingMode=SCALE_NONE, align 
                 if plotter.liftCommand:
                     gcode.extend(processCode(plotter.liftCommand))
                 else:
-                    gcode.append('G00 F%.1f Z%.3f; pen up !!Zup' % (plotter.zSpeed*60., plotter.penUpZ))
+                    gcode.append('G0 F%.1f Z%.3f; pen up !!Zup' % (plotter.zSpeed*60., plotter.penUpZ))
             if state.curZ is not None:
                 state.time += abs(plotter.penUpZ-state.curZ) / plotter.zSpeed
             state.curZ = plotter.penUpZ
@@ -413,7 +427,7 @@ def emitGcode(data, pens = {}, plotter=Plotter(), scalingMode=SCALE_NONE, align 
                 if plotter.downCommand:
                     gcode.extend(processCode(plotter.downCommand))
                 else:
-                    gcode.append('G00 F%.1f Z%.3f; pen down !!Zwork' % (plotter.zSpeed*60., plotter.workZ))
+                    gcode.append('G0 F%.1f Z%.3f; pen down !!Zwork' % (plotter.zSpeed*60., plotter.workZ))
             state.time += abs(state.curZ-plotter.workZ) / plotter.zSpeed
             state.curZ = plotter.workZ
 
@@ -430,7 +444,7 @@ def emitGcode(data, pens = {}, plotter=Plotter(), scalingMode=SCALE_NONE, align 
             else:
                 penUp(force=force)
             if not simulation:
-                gcode.append('G0%d F%.1f X%.3f Y%.3f; %s !!Xleft+%.3f Ybottom+%.3f' % (
+                gcode.append('G%d F%.1f X%.3f Y%.3f; %s !!Xleft+%.3f Ybottom+%.3f' % (
                     1 if down else 0, speed*60., p[0], p[1], "draw" if down else "move",
                     p[0]-plotter.xyMin[0], p[1]-plotter.xyMin[1]))
             else:
@@ -466,16 +480,20 @@ def emitGcode(data, pens = {}, plotter=Plotter(), scalingMode=SCALE_NONE, align 
 
         newPen = True
 
-        for segment in data[pen]:
-            penMove(False, plotter.moveSpeed, s.scalePoint(segment[0]))
+        # PES peut etre moyen de gérer dans cette boucle les directions à donner au cutter
+        paths = data[pen]
+        for path in paths:
+            firstPointInPath = path[0]
+            penMove(False, plotter.moveSpeed, s.scalePoint(firstPointInPath))  # up
 
             if newPen and (pen != 1 or pauseAtStart) and not simulation:
                 gcode.append( gcodePause+' load pen: ' + describePen(pens,pen) )
-                penMove(False, plotter.moveSpeed, s.scalePoint(segment[0]), force=True)
+                penMove(False, plotter.moveSpeed, s.scalePoint(firstPointInPath), force=True)  # up
             newPen = False
 
-            for i in range(1,len(segment)):
-                penMove(True, plotter.drawSpeed, s.scalePoint(segment[i]))
+            for i in range(1,len(path)):
+                point = path[i]
+                penMove(True, plotter.drawSpeed, s.scalePoint(point))  # down
 
     park()
 
@@ -577,41 +595,48 @@ def getPen(pens, color):
     return bestPen
 
 def parseSVG(svgTree, tolerance=0.05, shader=None, strokeAll=False, pens=None, extractColor = None):
-    data = {}
-    for path in parser.getPathsFromSVG(svgTree)[0]:
-        lines = []
+    """Transforms a svg in a list of segments (approximation of bezier)"""
+    data = {}  # contains multiple elements like [(28.50445, 45.626991), (28.541136169921874, 48.9305077578125)] => [(start point), (end ppoint)]
+    # each of the element represent a segment of the svg
+    svgPaths = parser.getPathsFromSVG(svgTree)[0]
+    for svgPath in svgPaths:
+        # lines = []  # pes dessin
 
-        stroke = strokeAll or (path.svgState.stroke is not None and (extractColor is None or isSameColor(path.svgState.stroke, extractColor)))
+        hasStroke = strokeAll or (svgPath.svgState.stroke is not None and (extractColor is None or isSameColor(svgPath.svgState.stroke, extractColor)))
 
-        strokePen = getPen(pens, path.svgState.stroke)
+        isFilled = svgPath.svgState.fill is not None  # PES permet de vérifier si couleur et eventuellement transformer en zone de coupe perdue
+
+        strokePen = getPen(pens, svgPath.svgState.stroke)
 
         if strokePen not in data:
             data[strokePen] = []
 
-        for line in path.linearApproximation(error=tolerance):
-            if stroke:
-                data[strokePen].append([(line.start.real,line.start.imag),(line.end.real,line.end.imag)])
-            lines.append((line.start, line.end))
+        # transforms bezier, arcs... into lines
+        for segment in svgPath.linearApproximation(error=tolerance):
+            if hasStroke:
+                data[strokePen].append([(segment.start.real,segment.start.imag),(segment.end.real,segment.end.imag)])
+            # lines.append((segment.start, segment.end))  # pes dessin
         if not data[strokePen]:
             del data[strokePen]
 
-        if shader is not None and shader.isActive() and path.svgState.fill is not None and (extractColor is None or
-                isSameColor(path.svgState.fill, extractColor)):
-            pen = getPen(pens, path.svgState.fill)
-
-            if pen not in data:
-                data[pen] = []
-
-            grayscale = sum(path.svgState.fill) / 3.
-            mode = Shader.MODE_NONZERO if path.svgState.fillRule == 'nonzero' else Shader.MODE_EVEN_ODD
-            if path.svgState.fillOpacity is not None:
-                grayscale = grayscale * path.svgState.fillOpacity + 1. - path.svgState.fillOpacity # TODO: real alpha!
-            fillLines = shader.shade(lines, grayscale, avoidOutline=(path.svgState.stroke is None or strokePen != pen), mode=mode)
-            for line in fillLines:
-                data[pen].append([(line[0].real,line[0].imag),(line[1].real,line[1].imag)])
-
-            if not data[pen]:
-                del data[pen]
+        # PES : semble être pour colorer les applas de couleurs dans les dessins
+        # if shader is not None and shader.isActive() and svgPath.svgState.fill is not None and (extractColor is None or
+        #         isSameColor(svgPath.svgState.fill, extractColor)):
+        #     pen = getPen(pens, svgPath.svgState.fill)
+        #
+        #     if pen not in data:
+        #         data[pen] = []
+        #
+        #     grayscale = sum(svgPath.svgState.fill) / 3.
+        #     mode = Shader.MODE_NONZERO if svgPath.svgState.fillRule == 'nonzero' else Shader.MODE_EVEN_ODD
+        #     if svgPath.svgState.fillOpacity is not None:
+        #         grayscale = grayscale * svgPath.svgState.fillOpacity + 1. - svgPath.svgState.fillOpacity # TODO: real alpha!
+        #     fillLines = shader.shade(lines, grayscale, avoidOutline=(svgPath.svgState.stroke is None or strokePen != pen), mode=mode)
+        #     for line in fillLines:
+        #         data[pen].append([(line[0].real,line[0].imag),(line[1].real,line[1].imag)])
+        #
+        #     if not data[pen]:
+        #         del data[pen]
 
     return data
 
@@ -771,21 +796,23 @@ if __name__ == '__main__':
     comment = ";"
     sendAndSave = False
     directionAngle = None
-    
+
+    # sys.stderr.write(str(sys.argv))
+
     def maybeNone(a):
         return None if a=='none' else a
 
     try:
         opts, args = getopt.getopt(sys.argv[1:], "e:UR:Uhdulw:P:o:Oc:LT:M:m:A:XHrf:na:D:t:s:S:x:y:z:Z:p:f:F:",
-                        ["help", "down", "up", "lower-left", "allow-repeats", "no-allow-repeats", "scale=", "config-file=",
-                        "area=", 'align-x=', 'align-y=', 'optimization-time=', "pens=",
-                        'input-dpi=', 'tolerance=', 'send=', 'send-speed=', 'work-z=', 'lift-delta-z=', 'safe-delta-z=',
-                        'pen-down-speed=', 'pen-up-speed=', 'z-speed=', 'hpgl-out', 'no-hpgl-out', 'shading-threshold=',
-                        'shading-angle=', 'shading-crosshatch', 'no-shading-crosshatch', 'shading-avoid-outline',
-                        'pause-at-start', 'no-pause-at-start', 'min-x=', 'max-x=', 'min-y=', 'max-y=',
-                        'no-shading-avoid-outline', 'shading-darkest=', 'shading-lightest=', 'stroke-all', 'no-stroke-all', 'gcode-pause', 'dump-options', 'tab=', 'extract-color=', 'sort', 'no-sort', 'simulation', 'no-simulation', 'tool-offset=', 'overcut=',
-                        'boolean-shading-crosshatch=', 'boolean-sort=', 'tool-mode=', 'send-and-save=', 'direction=', 'lift-command=', 'down-command=',
-                        'init-code=', 'comment-delimiters=', 'end-code=' ], )
+                                   ["help", "down", "up", "lower-left", "allow-repeats", "no-allow-repeats", "scale=", "config-file=",
+                                    "area=", 'align-x=', 'align-y=', 'optimization-time=', "pens=",
+                                    'input-dpi=', 'tolerance=', 'send=', 'send-speed=', 'work-z=', 'lift-delta-z=', 'safe-delta-z=',
+                                    'pen-down-speed=', 'pen-up-speed=', 'z-speed=', 'hpgl-out', 'no-hpgl-out', 'shading-threshold=',
+                                    'shading-angle=', 'shading-crosshatch', 'no-shading-crosshatch', 'shading-avoid-outline',
+                                    'pause-at-start', 'no-pause-at-start', 'tool-x-offset=', 'tool-y-offset=', 'min-x=', 'max-x=', 'min-y=', 'max-y=',
+                                    'no-shading-avoid-outline', 'shading-darkest=', 'shading-lightest=', 'stroke-all', 'no-stroke-all', 'gcode-pause', 'dump-options', 'tab=', 'extract-color=', 'sort', 'no-sort', 'simulation', 'no-simulation', 'tool-offset=', 'overcut=',
+                                    'boolean-shading-crosshatch=', 'boolean-sort=', 'tool-mode=', 'send-and-save=', 'direction=', 'lift-command=', 'down-command=',
+                                    'init-code=', 'comment-delimiters=', 'end-code=' ], )
 
         if len(args) + len(opts) == 0:
             raise getopt.GetoptError("invalid commandline")
@@ -855,6 +882,10 @@ if __name__ == '__main__':
                 v = list(map(float, arg.split(',')))
                 plotter.xyMin = (v[0],v[1])
                 plotter.xyMax = (v[2],v[3])
+            elif opt == '--tool-x-offset':
+                plotter.toolXyOffset = (float(arg),plotter.toolXyOffset[1])
+            elif opt == '--tool-y-offset':
+                plotter.toolXyOffset = (plotter.toolXyOffset[0],float(arg))
             elif opt == '--min-x':
                 plotter.xyMin = (float(arg),plotter.xyMin[1])
             elif opt == '--min-y':
@@ -1054,7 +1085,7 @@ if __name__ == '__main__':
     elif toolMode == 'draw':
         toolOffset = 0.
         sortPaths = False
-        
+
     plotter.updateVariables()
 
     if len(args) == 0:
@@ -1110,13 +1141,15 @@ if __name__ == '__main__':
             sys.stderr.write("Scaling with tool-offset > 0 will produce unpredictable results.\n")
         op = OffsetProcessor(toolOffset=toolOffset, overcut=overcut, tolerance=tolerance)
         for pen in penData:
-            penData[pen] = op.processPath(penData[pen])
+            penData[pen] = op.processPaths(penData[pen])
 
+    # PES dessin
     if directionAngle is not None:
         for pen in penData:
             penData[pen] = directionalize(penData[pen], directionAngle)
         penData = removePenBob(penData)
 
+    # PES dessin
     if len(penData) > 1:
         sys.stderr.write("Uses the following pens:\n")
         for pen in sorted(penData):
@@ -1126,8 +1159,9 @@ if __name__ == '__main__':
         g = emitHPGL(penData, pens=pens)
     else:
         g = emitGcode(penData, align=align, scalingMode=scalingMode, tolerance=tolerance,
-                plotter=plotter, gcodePause=gcodePause, pens=pens, pauseAtStart=pauseAtStart, simulation=svgSimulation)
+                      plotter=plotter, gcodePause=gcodePause, pens=pens, pauseAtStart=pauseAtStart, simulation=svgSimulation)
 
+    # PES send gcode to port
     if g:
         dump = True
 

@@ -118,33 +118,35 @@ class OffsetProcessor:
             self.curPath.append((x,y))
         self.lastPoint = [command, x, y]
 
-    def processPath(self, path):
+    def processPaths(self, paths):
         self.vData = [['', -1.0, -1.0], ['', -1.0, -1.0], ['', -1.0, -1.0], ['', -1.0, -1.0]]
         self.paths = []
         self.curPath = []
         self.lastPoint = [0, 0, 0]
         
-        self.processOffset('PU', 0, 0)
+        self.processOffset('PU', 0, 0)  # pen up command
 
         oldPosX = float("inf")
         oldPosY = float("inf")
-        for singlePath in path:
-            cmd = 'PU'
-            for singlePathPoint in singlePath:
-                posX, posY = singlePathPoint
+        for path in paths:
+            cmd = 'PU'  # pen up command
+            for point in path:
+                posX, posY = point
                 # check if point is repeating, if so, ignore
                 if OffsetProcessor.getLength(oldPosX,oldPosY,posX,posY) >= self.tolerance:
                     self.processOffset(cmd, posX, posY)
-                    cmd = 'PD'
+                    cmd = 'PD'  # pen down command
                     oldPosX = posX
                     oldPosY = posY
+                else:
+                    pass
             # perform overcut
             if self.overcut > 0.0:
                 # check if last and first points are the same, otherwise the path is not closed and no overcut can be performed
-                if OffsetProcessor.getLength(oldPosX,oldPosY,singlePath[0][0],singlePath[0][1]) <= self.tolerance:
+                if OffsetProcessor.getLength(oldPosX,oldPosY,path[0][0],path[0][1]) <= self.tolerance:
                     overcutLength = 0
-                    for singlePathPoint in singlePath:
-                        posX, posY = singlePathPoint
+                    for point in path:
+                        posX, posY = point
                         # check if point is repeating, if so, ignore
                         distance = OffsetProcessor.getLength(oldPosX,oldPosY, posX,posY)
                         if distance >= self.tolerance:
@@ -158,7 +160,7 @@ class OffsetProcessor:
                             oldPosX = posX
                             oldPosY = posY
     
-        self.processOffset('PU', 0, 0)
+        self.processOffset('PU', 0, 0)  # pen up command
         if len(self.curPath) > 1:
             self.paths.append(self.curPath)
         return self.paths
@@ -166,4 +168,4 @@ class OffsetProcessor:
 if __name__ == '__main__':
     paths = [[(0,0),(20,0),(20,20),(0,20),(0,0)], [(0,0),(20,0),(20,20),(0,20),(0,0)]]
     op = OffsetProcessor()
-    print(op.processPath(paths))
+    print(op.processPaths(paths))
